@@ -17,23 +17,6 @@ mkdir "$work/goose" "$work/nim" "$work/bend"
 cp "$here/main.goose" "$work/goose/"
 cp "$nim_src"/*.nim "$work/nim/"
 cp "$bend_src"/*.bend "$work/bend/"
-# Bend 2.0.39 changed IO.args() to start with the program name, and moved
-# runtime options between +RTS and -RTS; skip the name so [samples] works.
-python3 - "$work/bend/main.bend" <<'PY'
-import sys
-p = sys.argv[1]
-src = open(p).read()
-if "drop_prog" not in src:
-    src = src.replace("def main() -> IO(Unit):", """def drop_prog(xs: List<String>) -> List<String>:
-  match xs:
-    case []:
-      []
-    case h <> t:
-      t
-
-def main() -> IO(Unit):""", 1).replace("run(Opts.parse(args))", "run(Opts.parse(drop_prog(args)))")
-open(p, "w").write(src)
-PY
 
 (cd "$work/goose" && goose -O2 --standalone -o main.c main.goose >/dev/null \
   && ${CC:-gcc} -O3 -march=native main.c -o main -lm -pthread)

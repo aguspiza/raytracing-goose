@@ -115,12 +115,11 @@ expects raytracing-nim and raytracing-bend2 checked out next to this repo.
 
 ### Bend 2.0.39 and raytracing-bend2
 
-Bend changed two things since raytracing-bend2 was written: `IO.args()` now
-starts with the program name, as C's `argv[0]`, and runtime options go between
-`+RTS` and `-RTS`. So `./ray 4` renders at 64 samples (it reads `./ray` as the
-sample count, fails, and falls back to the default), and the thread cap is now
-`./ray 4 +RTS --threads 1 -RTS`. `bench.sh` patches a copy of `main.bend` to skip
-the program name before building it.
+Bend changed two things since raytracing-bend2 was first written: `IO.args()`
+now starts with the program name, as C's `argv[0]`, and runtime options go
+between `+RTS` and `-RTS`. raytracing-bend2 skips the program name since commit
+015377e, so check out that commit or later; the thread cap is
+`./ray 4 +RTS --threads 1 -RTS`.
 
 ## Compile time
 
