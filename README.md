@@ -147,10 +147,17 @@ two data-oriented steps are worth 5.5x:
   struct, so turning an array of spheres into flat arrays it can vectorize is
   up to the programmer.
 
-Goose did not point to this layout either. An array of sphere structs works
-just as well in Goose, and `goose build` uses `-O2`, where gcc does not
-vectorize the loop. What Goose did point to is the bounds checks:
-`goose check --bce-lines` showed which ones were left in the loop.
+Goose does not lay the data out this way by itself: an array of sphere
+structs works just as well in it, and `goose build` uses `-O2`, where gcc does
+not vectorize the loop. Its design notes do discuss the layout:
+`docs/design/soa.md` proposes column arrays, `T[||..]`, a struct-of-arrays
+type the language would lay out itself, and says that for now it is written by
+hand, one array per field, as here. That note also warns that such arrays all
+start at the same page offset, which can cost 2x through 4K aliasing. It does
+not seem to cost here: the loop only reads those arrays and writes two scratch
+ones, and Nim, with the arrays placed elsewhere in memory, takes the same time.
+What Goose's tools did point to is the bounds checks: `goose check --bce-lines`
+showed which ones were left in the loop.
 
 ### Bend 2.0.39 and raytracing-bend2
 

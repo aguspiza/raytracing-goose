@@ -22,23 +22,20 @@ let H = 600;
 let FAR: f32 = 1000000000.0;
 let T_MIN: f32 = 0.01;
 
-let LAMBERTIAN = 0;
-let METALIC = 1;
-let DIELECTRIC = 2;
-
 struct Ray { a: float3, b: float3 }
-struct Mat { kind: i32, albedo: float3, param: f32 }   // param: fuzzy or refraction
+enum Mat {
+    Lambertian { albedo: float3 },
+    Metalic { albedo: float3, fuzz: f32 },
+    Dielectric { refraction: f32 },
+}
 struct Cam { origin: float3, corner: float3, hor: float3, vert: float3, u: float3, v: float3, lens: f32 }
 
 // Vec
 // ---
 
-fn scale(v: float3, k: f32) -> float3 { float3 { v.x * k, v.y * k, v.z * k } }
-fn neg(v: float3) -> float3 { float3 { 0.0 - v.x, 0.0 - v.y, 0.0 - v.z } }
-fn div(v: float3, k: f32) -> float3 { float3 { v.x / k, v.y / k, v.z / k } }
-fn len(v: float3) -> f32 { sqrt(dot(v, v)) }
-fn unit_of(v: float3) -> float3 { scale(v, 1.0 / (len(v) + 0.0001)) }
-fn reflect(v: float3, n: float3) -> float3 { v - scale(n, dot(v, n) * 2.0) }
+// not vec's normalize: the + 0.0001 is the Nim original's
+fn unit_of(v: float3) -> float3 { v * (1.0 / (length(v) + 0.0001)) }
+fn reflect(v: float3, n: float3) -> float3 { v - n * (dot(v, n) * 2.0) }
 
 // Random
 // ------
@@ -106,22 +103,22 @@ fn new_cam(from: float3, to: float3) -> Cam {
     let w = unit_of(dist);
     let u = unit_of(cross(vup, w));
     let v = cross(w, u);
-    let fd = len(dist);
+    let fd = length(dist);
     let pi: f32 = 3.14159265;
     let hh = tan(20.0 * pi / 180.0 / 2.0);
     let hw = 2.0 * hh;
     // v points up; rows go top to bottom, so the corner is the top left
     // and the vertical span points down
-    let corner = from - scale(u, hw * fd) + scale(v, hh * fd) - scale(w, fd);
+    let corner = from - u * (hw * fd) + v * (hh * fd) - w * fd;
     let lens: f32 = 0.005;
-    return Cam { from, corner, scale(u, hw * fd * 2.0), scale(v, 0.0 - hh * fd * 2.0), u, v, lens / 2.0 };
+    return Cam { from, corner, u * (hw * fd * 2.0), v * (0.0 - hh * fd * 2.0), u, v, lens / 2.0 };
 }
 
 // d: the randInDisk() point for the lens
 fn cam_ray(c: Cam, pu: f32, pv: f32, d: float3) -> Ray {
-    let offset = scale(c.u, d.x * c.lens) + scale(c.v, d.y * c.lens);
-    let uh = scale(c.hor, pu);
-    let vv = scale(c.vert, pv) - c.origin - offset;
+    let offset = c.u * (d.x * c.lens) + c.v * (d.y * c.lens);
+    let uh = c.hor * pu;
+    let vv = c.vert * pv - c.origin - offset;
     return Ray { c.origin - offset, c.corner + (uh + vv) };
 }
 
@@ -149,19 +146,19 @@ fn add(o: float3, r: f32, m: Mat) {
 // a cell's material from its random numbers h + 3, h + 4, ..
 fn pick_mat(mp: f32, h: u32) -> Mat {
     if mp < 0.8 {
-        return Mat { LAMBERTIAN, float3 { at(h, 3) * at(h, 4), at(h, 5) * at(h, 6), at(h, 7) * at(h, 8) }, 0.0 };
+        return Mat.Lambertian { albedo: float3 { at(h, 3) * at(h, 4), at(h, 5) * at(h, 6), at(h, 7) * at(h, 8) } };
     }
     if mp < 0.95 {
-        return Mat { METALIC, float3 { 0.5 * (at(h, 3) + 1.0), 0.5 * (at(h, 4) + 1.0), 0.5 * (at(h, 5) + 1.0) }, 0.01 };
+        return Mat.Metalic { albedo: float3 { 0.5 * (at(h, 3) + 1.0), 0.5 * (at(h, 4) + 1.0), 0.5 * (at(h, 5) + 1.0) }, fuzz: 0.01 };
     }
-    return Mat { DIELECTRIC, float3_0, 1.5 };
+    return Mat.Dielectric { refraction: 1.5 };
 }
 
 // The Bend scene is a list built by prepending: the ground, the kept cells
 // from the last to the first, then the three big spheres. Same order here,
 // so a tie between two spheres goes the same way.
 fn build_scene() {
-    add(float3 { 0.0, -1000.0, 0.0 }, 1000.0, Mat { LAMBERTIAN, float3 { 0.5, 0.5, 0.5 }, 0.0 });
+    add(float3 { 0.0, -1000.0, 0.0 }, 1000.0, Mat.Lambertian { albedo: float3 { 0.5, 0.5, 0.5 } });
     let tilt: f32 = 0.2;
     var k: u32 = 484;
     while k > 0 {
@@ -172,14 +169,14 @@ fn build_scene() {
         let cx = (k / 22) - 11.0 + 0.9 + at(h, 1);
         let cz = (k % 22) - 11.0 + 0.9 + at(h, 2);
         let c = float3 { cx, 0.2, cz };
-        if len(c - float3 { 4.0, 0.2, 0.0 }) > 0.9 {
-            let cy = 0.2 - tilt / 45.0 * len(c);
+        if length(c - float3 { 4.0, 0.2, 0.0 }) > 0.9 {
+            let cy = 0.2 - tilt / 45.0 * length(c);
             add(float3 { cx, cy, cz }, 0.2, pick_mat(mp, h));
         }
     }
-    add(float3 { 0.0, 1.0, 0.0 }, 1.0, Mat { DIELECTRIC, float3_0, 1.5 });
-    add(float3 { -4.0, 1.0, 0.0 }, 1.0, Mat { LAMBERTIAN, float3 { 0.4, 0.2, 0.1 }, 0.0 });
-    add(float3 { 4.0, 1.0, 0.0 }, 1.0, Mat { METALIC, float3 { 0.7, 0.6, 0.5 }, 0.01 });
+    add(float3 { 0.0, 1.0, 0.0 }, 1.0, Mat.Dielectric { refraction: 1.5 });
+    add(float3 { -4.0, 1.0, 0.0 }, 1.0, Mat.Lambertian { albedo: float3 { 0.4, 0.2, 0.1 } });
+    add(float3 { 4.0, 1.0, 0.0 }, 1.0, Mat.Metalic { albedo: float3 { 0.7, 0.6, 0.5 }, fuzz: 0.01 });
 }
 
 // Hits
@@ -237,7 +234,7 @@ fn hit(r: Ray) -> i64, f32 {
 
 fn sky(d: float3) -> float3 {
     let t = 0.5 * (unit_of(d).y + 1.0);
-    return scale(float3_1, 1.0 - t) + scale(float3 { 0.5, 0.7, 1.0 }, t);
+    return float3_1 * (1.0 - t) + float3 { 0.5, 0.7, 1.0 } * t;
 }
 
 fn schlick(cosine: f32, ri: f32) -> f32 {
@@ -245,6 +242,42 @@ fn schlick(cosine: f32, ri: f32) -> f32 {
     let r = r0 * r0;
     let five: f32 = 5.0;
     return r + (1.0 - r) * pow(1.0 - cosine, five);
+}
+
+// What a material does to a ray of direction b that hits it at p, with
+// normal n: the new direction, the attenuation, the generator state after
+// it, and whether the ray goes on (a metal can absorb it). Calling scatter
+// with a Mat dispatches on its variant.
+fn scatter(m: Mat.Lambertian, b: float3, p: float3, n: float3, s: u32) -> float3, float3, u32, bool {
+    let c = in_sphere(s);
+    let target = p + n + vec3_of(c);
+    return target - p, m.albedo, next3(c), true;
+}
+
+fn scatter(m: Mat.Metalic, b: float3, p: float3, n: float3, s: u32) -> float3, float3, u32, bool {
+    let c = in_sphere(s);
+    let d = reflect(unit_of(b), n) + vec3_of(c) * m.fuzz;
+    return d, m.albedo, next3(c), dot(d, n) > 0.0;
+}
+
+fn scatter(m: Mat.Dielectric, b: float3, p: float3, n: float3, s: u32) -> float3, float3, u32, bool {
+    let refraction = m.refraction;
+    let bn = dot(b, n);
+    let inside = bn > 0.0;
+    let out = if inside { -n } else { n };
+    let ni = if inside { refraction } else { 1.0 / refraction };
+    let cos0 = 0.0 - bn / length(b);
+    let cosine = if inside { 0.0 - cos0 * refraction } else { cos0 };
+    let nv = unit_of(b);
+    let dt = dot(nv, out);
+    let disc = 1.0 - ni * ni * (1.0 - dt * dt);
+    let through = disc > 0.0 && u(s) > schlick(cosine, refraction);
+    let d = if through {
+        (nv - out * dt) * ni - out * sqrt(disc)
+    } else {
+        reflect(b, n)
+    };
+    return d, float3_1, next(s), true;
 }
 
 // color() of main.nim: up to 49 bounces, then a last hit test, whose hit
@@ -256,43 +289,13 @@ fn color(r0: Ray, s0: u32) -> float3, u32 {
     for bounce in 49 {
         let i, t = hit(ray);
         if i < 0 { return acc * sky(ray.b), s; }
-        let b = ray.b;
-        let p = ray.a + scale(b, t);
-        let n = div(p - float3 { ox[i], oy[i], oz[i] }, rad[i]);
-        let m = mats[i];
-        if m.kind == LAMBERTIAN {
-            let c = in_sphere(s);
-            let target = p + n + vec3_of(c);
-            ray = Ray { p, target - p };
-            acc = acc * m.albedo;
-            s = next3(c);
-        } else if m.kind == METALIC {
-            let c = in_sphere(s);
-            let d = reflect(unit_of(b), n) + scale(vec3_of(c), m.param);
-            s = next3(c);
-            if dot(d, n) <= 0.0 { return float3_0, s; }
-            ray = Ray { p, d };
-            acc = acc * m.albedo;
-        } else {
-            let refraction = m.param;
-            let bn = dot(b, n);
-            let inside = bn > 0.0;
-            let out = if inside { neg(n) } else { n };
-            let ni = if inside { refraction } else { 1.0 / refraction };
-            let cos0 = 0.0 - bn / len(b);
-            let cosine = if inside { 0.0 - cos0 * refraction } else { cos0 };
-            let nv = unit_of(b);
-            let dt = dot(nv, out);
-            let disc = 1.0 - ni * ni * (1.0 - dt * dt);
-            let through = disc > 0.0 && u(s) > schlick(cosine, refraction);
-            let d = if through {
-                scale(nv - scale(out, dt), ni) - scale(out, sqrt(disc))
-            } else {
-                reflect(b, n)
-            };
-            ray = Ray { p, d };
-            s = next(s);
-        }
+        let p = ray.a + ray.b * t;
+        let n = (p - float3 { ox[i], oy[i], oz[i] }) / rad[i];
+        let d, att, s2, alive = scatter(mats[i], ray.b, p, n, s);
+        s = s2;
+        guard alive else { return float3_0, s; }
+        ray = Ray { p, d };
+        acc = acc * att;
     }
     let i, t = hit(ray);
     if i < 0 { return acc * sky(ray.b), s; }
@@ -314,7 +317,7 @@ fn render_row(c: Cam, y: i64, ns: i64) -> u8[>..] {
             sum = sum + col;
             s = s2;
         }
-        let m = div(sum, ns);
+        let m = sum / (ns as f32);
         px.push(to_byte(m.x));
         px.push(to_byte(m.y));
         px.push(to_byte(m.z));
