@@ -83,35 +83,74 @@ so it is gone.
 ## Timing
 
 1200x600, WSL2 on a 16-thread CPU (Ryzen 7 5700U), median of 3 runs.
-Goose v2026.3 with gcc 13.3. Nim is the `fix-threads-and-cross` branch of
-raytracing-nim, built with Nim 2.2.10 and `-d:release`. Bend is
-raytracing-bend2 built with Bend 2.0.39 (see the note below).
+Goose v2026.3 with gcc 13.3. Nim is raytracing-nim built with Nim 2.2.10:
+the `fix-threads-and-cross` branch with `-d:release`, and the
+[`optimized`](https://github.com/aguspiza/raytracing-nim/tree/optimized)
+branch, which lays out the data as this port does and writes the same image.
+Bend is raytracing-bend2 built with Bend 2.0.39 (see the note below).
 
-| 4 samples per pixel          | Wall time | Peak RAM |
-| ---------------------------- | --------- | -------- |
-| Nim, `--threads:off`         | 18.9 s    | 11 MB    |
-| Nim, `--threads:on`          | 3.2 s     | 14 MB    |
-| Bend, 1 thread               | 30.0 s    | 48 MB    |
-| Bend, 16 threads             | 4.9 s     | 48 MB    |
-| Goose, 1 thread              | 2.4 s     | 6 MB     |
-| Goose, 16 threads            | 0.35 s    | 6 MB     |
+| 4 samples per pixel             | Wall time | Peak RAM |
+| ------------------------------- | --------- | -------- |
+| Nim, `--threads:off`            | 18.9 s    | 11 MB    |
+| Nim, `--threads:on`             | 3.2 s     | 14 MB    |
+| Nim `optimized`, 1 thread       | 2.2 s     | 11 MB    |
+| Nim `optimized`, 16 threads     | 0.38 s    | 11 MB    |
+| Bend, 1 thread                  | 30.0 s    | 48 MB    |
+| Bend, 16 threads                | 4.9 s     | 48 MB    |
+| Goose, 1 thread                 | 2.2 s     | 6 MB     |
+| Goose, 16 threads               | 0.34 s    | 6 MB     |
 
 | 64 samples per pixel, 16 threads | Wall time | Peak RAM |
 | -------------------------------- | --------- | -------- |
 | Nim                              | 52.5 s    | 14 MB    |
+| Nim `optimized`                  | 5.6 s     | 11 MB    |
 | Bend                             | 81.2 s    | 48 MB    |
-| Goose                            | 5.6 s     | 6 MB     |
+| Goose                            | 5.9 s     | 6 MB     |
 
-Goose on 16 threads scales 6.7x over 1 thread, Nim 5.9x and Bend 6.1x.
+`./bench.sh [samples] [runs]` builds Goose, Nim and Bend and prints these
+tables. It expects raytracing-nim and raytracing-bend2 checked out next to
+this repo.
 
-These numbers compare three ports, not three compilers. Most of the gap is in
-how each one is written: the Nim code returns `Option`s and keeps materials as
-`ref` objects, Bend walks a linked list of spheres, and this port lays the
-spheres out for SIMD. Nim's time barely moves with `-march=native` (18.2 s) or
-`-d:danger` (18.4 s), so it is not losing on code generation.
+## Where the speed comes from: data-oriented design
 
-`./bench.sh [samples] [runs]` builds all three and prints these tables. It
-expects raytracing-nim and raytracing-bend2 checked out next to this repo.
+The gap is in the design, not in the language. Laid out the same way, Nim
+renders the same image in the same time as Goose. What changes the time is
+data-oriented design: laying out the data for what the hot loop reads, not by
+entity.
+
+The hit test takes over 90% of the time. For each ray it walks 486 spheres,
+and it only needs their centers and `r * r`; only the nearest sphere needs its
+material, radius and normal. The original Nim port is laid out by entity: it
+passes each `Sphere`, material included, to a test that returns a full
+`HitData` for every candidate. This port reads four flat `f32` arrays and
+keeps only the index and distance of the nearest sphere.
+
+Taking the original Nim port to the `optimized` branch one step at a time,
+4 samples per pixel, 1 thread, best of 3:
+
+| Step                                                          | Wall time | Gain  |
+| ------------------------------------------------------------- | --------- | ----- |
+| Original, `-d:release`                                        | 17.3 s    |       |
+| `-d:danger --panics:on -march=native`                         | 16.2 s    | 1.07x |
+| Hit test keeps the index and `t`, not a `HitData` per sphere  | 5.9 s     | 2.7x  |
+| Spheres as four flat `float32` arrays, two passes (AVX)       | 2.9 s     | 2.0x  |
+| The rest: Bend's random numbers and scene, no `Option`        | 2.45 s    | 1.2x  |
+
+The first three steps render the same scene. Compiler flags are worth 7%. The
+two data-oriented steps are worth 5.5x:
+
+- gcc can recover most of the first one by itself, but does not by default. It
+  judges the call in the loop cold and does not inline it. With `{.inline.}`
+  on the test, or with gcc's profile-guided optimization, the original code
+  takes 6.4 s.
+- No compiler does the second one. A C compiler never changes the layout of a
+  struct, so turning an array of spheres into flat arrays it can vectorize is
+  up to the programmer.
+
+Goose did not point to this layout either. An array of sphere structs works
+just as well in Goose, and `goose build` uses `-O2`, where gcc does not
+vectorize the loop. What Goose did point to is the bounds checks:
+`goose check --bce-lines` showed which ones were left in the loop.
 
 ### Bend 2.0.39 and raytracing-bend2
 
@@ -127,9 +166,10 @@ A full build from source, median of three runs.
 
 | Build                                    | Wall time | Compiler peak RAM |
 | ---------------------------------------- | --------- | ----------------- |
-| Goose, emit C and gcc `-O3`              | 1.0 s     | 61 MB             |
-| Nim 2.2.10, `-f -d:release --threads:on` | 2.6 s     | 87 MB             |
-| Bend, full build (`-o ray`)              | 2.9 s     | 136 MB            |
+| Goose, emit C and gcc `-O3`              | 0.9 s     | 60 MB             |
+| Nim 2.2.10, `-f -d:release --threads:on` | 2.3 s     | 87 MB             |
+| Nim 2.2.10 `optimized`, `-f`             | 2.2 s     | 89 MB             |
+| Bend, full build (`-o ray`)              | 4.0 s     | 138 MB            |
 
 Goose itself takes a few hundredths of a second to check the program and emit
 the C. gcc takes the rest.
@@ -139,6 +179,7 @@ the C. gcc takes the rest.
 | Executable, stripped   | Size    |
 | ---------------------- | ------- |
 | Goose                  | 47 KB   |
+| Nim `optimized`        | 93 KB   |
 | Bend `ray`             | 122 KB  |
 | Nim, `--threads:on`    | 134 KB  |
 
